@@ -1,0 +1,7 @@
+streamlit
+requests
+pypdf
+python-docx
+groq
+faster-whisper
+faster-whisper
