@@ -4,24 +4,34 @@ import re
 import shutil
 import tempfile
 import time
+import os
+
+
 from pathlib import Path
 
-import requests
 import streamlit as st
 from faster_whisper import WhisperModel
 from pypdf import PdfReader
 from docx import Document
+from groq import Groq
 
 import database as db
-from text_to_speech import speak_text
+
+# Piper is optional at startup so a missing cloud voice model does not
+# prevent text chat and speech recognition from loading.
+try:
+    from text_to_speech import speak_text
+    TTS_IMPORT_ERROR = None
+except Exception as import_error:
+    speak_text = None
+    TTS_IMPORT_ERROR = str(import_error)
 
 
 # ---------------------------------------
 # Configuration
 # ---------------------------------------
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL_NAME = "llama3.2:1b"
+MODEL_NAME = "openai/gpt-oss-20b"
 
 # Limit individual uploads to 20 MB.
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -341,7 +351,7 @@ with st.sidebar:
     st.divider()
 
     st.caption(f"Model: {MODEL_NAME}")
-    st.caption("Local AI • SQLite storage")
+    st.caption("Groq cloud AI • SQLite storage")
 
 
 # ---------------------------------------
@@ -641,54 +651,58 @@ if user_input:
                     "content": system_instruction
                 }
             )
-            response = requests.post(
-                OLLAMA_URL,
-                json={
-                    "model": MODEL_NAME,
-                    "messages": model_messages,
-                    "stream": False
-                },
-                timeout=300
+            client = Groq(
+                api_key=os.environ.get("GROQ_API_KEY")
             )
 
-            response.raise_for_status()
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=model_messages,
+                timeout=120
+            )
 
-            answer = response.json()["message"]["content"]
+            answer = response.choices[0].message.content
 
-            # Generate speech once. If TTS fails, keep the text response.
+            # Generate speech once when Piper and its voice model are available.
+            # A TTS failure should never prevent the text answer from being saved.
             saved_audio_path = None
-            try:
-                contains_hindi = any(
-                    "\u0900" <= char <= "\u097F"
-                    for char in answer
+            if speak_text is None:
+                st.info(
+                    "Text-to-speech is unavailable in this deployment. "
+                    + (f"Import detail: {TTS_IMPORT_ERROR}" if TTS_IMPORT_ERROR else "")
                 )
-                language = "hi" if contains_hindi else "en"
-
-                with st.spinner("Generating audio..."):
-                    generated_audio_path = Path(
-                        speak_text(answer, language=language)
+            else:
+                try:
+                    contains_hindi = any(
+                        "\u0900" <= char <= "\u097F"
+                        for char in answer
                     )
+                    language = "hi" if contains_hindi else "en"
 
-                if not generated_audio_path.is_file():
-                    raise FileNotFoundError(
-                        f"Text-to-speech did not create a file: {generated_audio_path}"
+                    with st.spinner("Generating audio..."):
+                        generated_audio_path = Path(
+                            speak_text(answer, language=language)
+                        )
+
+                    if not generated_audio_path.is_file():
+                        raise FileNotFoundError(
+                            f"Text-to-speech did not create a file: {generated_audio_path}"
+                        )
+
+                    audio_folder = Path(__file__).resolve().parent / "chat_audio"
+                    audio_folder.mkdir(parents=True, exist_ok=True)
+                    audio_filename = (
+                        f"conversation_{conversation_id}_{time.time_ns()}.wav"
                     )
+                    permanent_audio_path = audio_folder / audio_filename
+                    shutil.copy2(generated_audio_path, permanent_audio_path)
+                    saved_audio_path = str(permanent_audio_path.resolve())
 
-                audio_folder = Path(__file__).resolve().parent / "chat_audio"
-                audio_folder.mkdir(parents=True, exist_ok=True)
-
-                # Use a unique filename so each reply keeps its own audio.
-                audio_filename = (
-                    f"conversation_{conversation_id}_{time.time_ns()}.wav"
-                )
-                permanent_audio_path = audio_folder / audio_filename
-                shutil.copy2(generated_audio_path, permanent_audio_path)
-                saved_audio_path = str(permanent_audio_path.resolve())
-
-            except Exception as audio_error:
-                st.warning(
-                    f"Text response was saved, but audio generation failed: {audio_error}"
-                )
+                except Exception as audio_error:
+                    st.warning(
+                        "Text response was saved, but audio generation failed. "
+                        f"Check that Piper and the Hindi/English voice models are available: {audio_error}"
+                    )
 
             # Save each assistant response exactly once, with its audio path.
             db.add_message(
@@ -697,28 +711,8 @@ if user_input:
                 answer,
                 saved_audio_path
             )
-        except requests.exceptions.ConnectionError:
-
-            st.error(
-                "Cannot connect to Ollama. "
-                "Check that Ollama is running."
-            )
-
-        except requests.exceptions.Timeout:
-
-            st.error(
-                "The AI model took too long to respond."
-            )
-
-        except requests.exceptions.RequestException as error:
-
-            st.error(f"Request failed: {error}")
-
-        except (KeyError, ValueError):
-
-            st.error(
-                "Ollama returned an unexpected response."
-            )
+        except Exception as error:
+            st.error(f"AI response failed: {error}")
 
         else:
             st.rerun()
