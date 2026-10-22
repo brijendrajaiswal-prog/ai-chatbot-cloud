@@ -1,9 +1,8 @@
 streamlit
+groq
 requests
+faster-whisper
 pypdf
 python-docx
-groq
-faster-whisper
-faster-whisper
 piper-tts
 av>=14,<16

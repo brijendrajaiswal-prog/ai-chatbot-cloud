@@ -10,6 +10,11 @@ chatbot.db-shm
 chatbot.db-wal
 chat_audio/
 audio/
+# Ignore ONNX files except Piper voice models
+# Piper voice models required for deployment
 *.onnx
 *.onnx.json
+!voices/
+!voices/*.onnx
+!voices/*.onnx.json
 cloudflared.exe
