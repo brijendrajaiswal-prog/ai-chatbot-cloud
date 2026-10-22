@@ -5,3 +5,4 @@ python-docx
 groq
 faster-whisper
 faster-whisper
+piper-tts
